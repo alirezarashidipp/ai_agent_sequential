@@ -1,0 +1,37 @@
+from pydantic import BaseModel, Field
+from typing import Optional, List
+
+# --- Upstream Payload Models ---
+class ExtractionStatus(BaseModel):
+    identified: bool
+    evidence: Optional[str] = None
+
+class ACDefinedStatus(BaseModel):
+    presence_ac: bool
+    ac_evidence: Optional[str] = None
+    english_text_feedback: Optional[str] = None
+    overal_feedback: Optional[str] = None
+
+class ParsedJiraPayload(BaseModel):
+    who: ExtractionStatus
+    what: ExtractionStatus
+    why: ExtractionStatus
+    ac_defined: ACDefinedStatus
+    grooming_questions: List[str] = Field(default_factory=list)
+    org_text: str
+
+# --- LLM Output Models ---
+class ValidationResult(BaseModel):
+    is_valid: bool = Field(description="True if the input is valid and clear.")
+    normalized_value: Optional[str] = Field(description="Cleaned, professional format.")
+
+class MissingTechnicalDetail(BaseModel):
+    has_missing_details: bool = Field(description="True if critical technical details are missing.")
+    questions: List[str] = Field(description="List of UP TO 4 critical questions. Empty if none.")
+
+class AcceptanceCriteria(BaseModel):
+    criteria: List[str] = Field(description="List of Agile Acceptance Criteria.")
+
+class FinalStory(BaseModel):
+    user_story: str = Field(description="Agile user story sentence.")
+    acceptance_criteria: List[str] = Field(description="Finalized list of acceptance criteria.")
