@@ -1,27 +1,11 @@
 import yaml
-from pydantic import BaseModel, Field
 from pathlib import Path
-from typing import List, Optional
-from models import ParsedJiraPayload, ValidationResult, AcceptanceCriteria, FinalStory
+from models import (
+    ParsedJiraPayload, SessionState, ValidationResult, 
+    MissingTechnicalDetail, AcceptanceCriteria, FinalStory
+)
 from llm_client import StructuredLLMClient
 
-# ==========================================
-# 1. SESSION STATE (The Independent Memory)
-# ==========================================
-class SessionState(BaseModel):
-
-    
-    what: Optional[str] = None
-    why: Optional[str] = None
-    who: Optional[str] = None
-    tech_notes: List[str] = Field(default_factory=list)
-    ac_list: List[str] = Field(default_factory=list)
-    final_story: Optional[str] = None
-
-
-# ==========================================
-# 2. STATELESS PIPELINE (Behavior Only)
-# ==========================================
 class JiraStatelessPipeline:
     def __init__(self, llm_client: StructuredLLMClient, prompt_file: str = "prompts.yaml"):
         self.llm = llm_client
@@ -32,34 +16,35 @@ class JiraStatelessPipeline:
         with open(path, "r", encoding="utf-8") as file:
             return yaml.safe_load(file)
 
-    # --- MAIN ORCHESTRATOR ---
+    # ==========================================
+    # MAIN ORCHESTRATOR
+    # ==========================================
     def run(self, payload: ParsedJiraPayload) -> SessionState:
-        print("--- AI Jira Grooming Pipeline (Stateless) ---")
+        print("--- Enterprise AI Jira Grooming Pipeline (Stateless) ---")
         state = SessionState()
 
-        # Phase 1: 3W Validation (Pass state in, get mutated state out)
+        # Phase 1: Core Triad Validation (Just-In-Time)
         state = self._resolve_core_triad(state, payload)
 
-        # Phase 2: Technical Grooming (Bypass if WHAT was missing in upstream)
-        if payload.what.identified and payload.grooming_questions:
-            state = self._gather_technical_context(state, payload)
-        else:
-            print("\n[SYSTEM] WHAT was missing upstream. Skipping static grooming questions.")
+        # Phase 2: Technical Grooming (Static vs. Dynamic Branching)
+        state = self._gather_technical_context(state, payload)
 
-        # Phase 3: AC Synthesis (With 3-try loop)
+        # Phase 3: AC Synthesis (With Human-in-the-Loop 3-Try Feedback)
         state = self._synthesize_ac(state, payload)
 
-        # Phase 4: Final Story (With 3-try loop)
+        # Phase 4: Final Artifact Generation (With Human-in-the-Loop 3-Try Feedback)
         state = self._generate_final_story(state)
 
         return state
 
-    # --- PHASE 1: CORE TRIAD ---
+    # ==========================================
+    # PHASE 1: RESOLVE CORE TRIAD
+    # ==========================================
     def _resolve_core_triad(self, state: SessionState, payload: ParsedJiraPayload) -> SessionState:
         sys_prompt = self.prompts['system_personas']['validator']
         max_retries = 3
 
-        # Mapping payload evidence to state
+        # Mapping upstream payload definitions to state variables
         fields_map = {
             'what': (payload.what.identified, payload.what.intent_evidence),
             'why': (payload.why.identified, payload.why.value_evidence),
@@ -71,11 +56,11 @@ class JiraStatelessPipeline:
                 setattr(state, field, evidence)
                 continue
 
-            # Field missing: Start 3-try validation loop
+            # Critical Path: Field is missing, initiate JIT Validation Loop
             retries = 0
             while getattr(state, field) is None:
                 if retries >= max_retries:
-                    print(f"\n[SYSTEM WARN] Max retries hit. Aborting or forcing raw input for {field.upper()}.")
+                    print(f"\n[SYSTEM WARN] Validation threshold exceeded. Forcing raw input for {field.upper()}.")
                     setattr(state, field, f"Unknown {field}")
                     break
 
@@ -93,21 +78,46 @@ class JiraStatelessPipeline:
                     setattr(state, field, validation.normalized_value)
                 else:
                     retries += 1
-                    reason = validation.rejection_reason or "Invalid input."
+                    reason = validation.rejection_reason or "Invalid input format."
                     print(f"\n[REJECTED] {reason} (Attempt {retries}/{max_retries})")
 
         return state
 
-    # --- PHASE 2: GROOMING QUESTIONS ---
+    # ==========================================
+    # PHASE 2: TECHNICAL GROOMING
+    # ==========================================
     def _gather_technical_context(self, state: SessionState, payload: ParsedJiraPayload) -> SessionState:
-        print("\n[SYSTEM] Extracting technical details...")
-        for i, question in enumerate(payload.grooming_questions, 1):
-            ans = input(f"\nQuestion {i}/{len(payload.grooming_questions)}:\n{question}\n(Answer, or type 'skip'):\n> ").strip()
-            if ans.lower() not in ["skip", "no", "n/a", ""]:
-                state.tech_notes.append(f"Q: {question} | A: {ans}")
+        questions_to_ask = []
+
+        # Logical Branching: Static vs. Dynamic
+        if payload.what.identified and payload.grooming_questions:
+            print("\n[SYSTEM] Using pre-computed grooming questions (Static Route).")
+            questions_to_ask = payload.grooming_questions
+        else:
+            print("\n[SYSTEM] WHAT was newly defined. Generating dynamic grooming questions (Dynamic Route).")
+            sys_prompt = self.prompts['system_personas']['tech_lead']
+            user_prompt = self.prompts['user_prompts']['generate_dynamic_questions'].format(
+                what_statement=state.what
+            )
+            analysis = self.llm.query(sys_prompt, user_prompt, MissingTechnicalDetail)
+            
+            if analysis.has_missing_details and analysis.questions:
+                questions_to_ask = analysis.questions[:4] # Strict enforcement of 4 max questions
+
+        # Execution Loop (Skipping LLM validation here to prevent overhead)
+        if questions_to_ask:
+            for i, question in enumerate(questions_to_ask, 1):
+                ans = input(f"\nTech Detail {i}/{len(questions_to_ask)}:\n{question}\n(Answer, or type 'skip'):\n> ").strip()
+                if ans.lower() not in ["skip", "no", "n/a", ""]:
+                    state.tech_notes.append(f"Q: {question} | A: {ans}")
+        else:
+            print("\n[SYSTEM] No technical grooming questions required. Proceeding.")
+
         return state
 
-    # --- PHASE 3: AC SYNTHESIS (3 Tries) ---
+    # ==========================================
+    # PHASE 3: AC SYNTHESIS
+    # ==========================================
     def _synthesize_ac(self, state: SessionState, payload: ParsedJiraPayload) -> SessionState:
         print("\n[SYSTEM] Synthesizing Acceptance Criteria...")
         sys_prompt = self.prompts['system_personas']['agile_coach']
@@ -124,7 +134,7 @@ class JiraStatelessPipeline:
         # 3-Try Version Control Loop
         max_edits = 3
         for attempt in range(max_edits):
-            print("\nProposed Acceptance Criteria:")
+            print("\n--- Proposed Acceptance Criteria ---")
             for idx, crit in enumerate(current_ac, 1):
                 print(f"{idx}. {crit}")
                 
@@ -140,12 +150,14 @@ class JiraStatelessPipeline:
             current_ac = updated_ac_draft.criteria
             
             if attempt == max_edits - 1:
-                print("\n[SYSTEM] Max edits reached. Locking AC.")
+                print("\n[SYSTEM WARN] Max edits reached. Locking Acceptance Criteria.")
 
         state.ac_list = current_ac
         return state
 
-    # --- PHASE 4: FINAL STORY (3 Tries) ---
+    # ==========================================
+    # PHASE 4: FINAL STORY GENERATION
+    # ==========================================
     def _generate_final_story(self, state: SessionState) -> SessionState:
         print("\n[SYSTEM] Generating final Jira artifact...")
         sys_prompt = self.prompts['system_personas']['story_writer']
@@ -160,7 +172,9 @@ class JiraStatelessPipeline:
         # 3-Try Version Control Loop
         max_edits = 3
         for attempt in range(max_edits):
-            print("\n" + "="*50 + "\nFINAL AGILE JIRA STORY\n" + "="*50)
+            print("\n" + "="*50)
+            print("FINAL AGILE JIRA STORY")
+            print("="*50)
             print(current_story.user_story)
             print("\nAcceptance Criteria:")
             for idx, crit in enumerate(current_story.acceptance_criteria, 1):
@@ -178,7 +192,7 @@ class JiraStatelessPipeline:
             current_story = updated_story_draft
             
             if attempt == max_edits - 1:
-                print("\n[SYSTEM] Max edits reached. Locking Story.")
+                print("\n[SYSTEM WARN] Max edits reached. Locking Story.")
 
         state.final_story = current_story.user_story
         state.ac_list = current_story.acceptance_criteria
