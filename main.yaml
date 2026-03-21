@@ -1,34 +1,54 @@
+import json
 from models import ParsedJiraPayload
 from llm_client import StructuredLLMClient
-from agent import JiraGroomingAgent
+from agent import JiraStatelessPipeline
 
 def get_mock_payload() -> ParsedJiraPayload:
-    # شبیه‌سازی خروجی سیستم NLP بالادستی
-    mock_json = {
-        "who": {"identified": True, "evidence": "Tfx team"},
-        "what": {"identified": False, "evidence": None}, # باعث تریگر شدن سوالات داینامیک می‌شود
-        "why": {"identified": True, "evidence": "store and manage additional data related to the project"},
+
+    
+    mock_dict = {
+        "who": {
+            "identified": True, 
+            "evidence": "Tfx team"
+        },
+        "what": {
+            "identified": False, # این مقدار False باعث تریگر شدن حلقه اعتبارسنجی ۳-تلاشه می‌شود
+            "intent_evidence": None
+        },
+        "why": {
+            "identified": True, 
+            "value_evidence": "store and manage additional data related to the project"
+        },
         "ac_defined": {
             "presence_ac": True,
-            "ac_evidence": "Ensure the system stores the data accurately.",
-            "english_text_feedback": "Sentences are short but contain awkward phrasing.",
-            "overal_feedback": "The description lacks technical specifics."
+            "ac_evidence": "Ensure the system stores the data accurately."
         },
         "grooming_questions": [
-            "What is the exact name and data type of the new column?"
-        ],
-        "org_text": "As a Tfx team, we wanted to store and manage additional data related to the project. Ensure the system stores the data accurately."
+            "What is the exact name and data type of the new column?",
+            "Where in the Project class should the column be added?"
+        ]
     }
-    return ParsedJiraPayload(**mock_json)
+    return ParsedJiraPayload(**mock_dict)
 
 if __name__ == "__main__":
+    print("[SYSTEM BOOT] Initializing Stateless Jira Pipeline...")
     try:
+   
         payload = get_mock_payload()
-        client = StructuredLLMClient() 
-        agent = JiraGroomingAgent(client)
         
-        # استارت پایپ‌لاین دو فازی
-        agent.run(payload)
+
+        client = StructuredLLMClient() 
+        pipeline = JiraStatelessPipeline(client)
+        
+     
+        final_state = pipeline.run(payload)
+        
+ 
+        print("\n" + "="*50)
+        print("[SYSTEM TERMINATE] Pipeline Execution Completed Successfully.")
+        print("Final Exportable Session State (JSON):")
+        print(final_state.model_dump_json(indent=2))
+        print("="*50)
         
     except Exception as e:
-        print(f"\n[SYSTEM HALT] Execution failed: {e}")
+        print(f"\n[FATAL ERROR] Execution halted abruptly due to unhandled exception: {e}")
