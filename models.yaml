@@ -1,37 +1,47 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 
-# --- Upstream Payload Models ---
-class ExtractionStatus(BaseModel):
+# ==========================================
+# 1. UPSTREAM PAYLOAD SCHEMA (INPUT)
+# ==========================================
+
+class WhatExtraction(BaseModel):
+    identified: bool
+    intent_evidence: Optional[str] = None
+
+class WhyExtraction(BaseModel):
+    identified: bool
+    value_evidence: Optional[str] = None
+
+class WhoExtraction(BaseModel):
     identified: bool
     evidence: Optional[str] = None
 
 class ACDefinedStatus(BaseModel):
     presence_ac: bool
     ac_evidence: Optional[str] = None
-    english_text_feedback: Optional[str] = None
-    overal_feedback: Optional[str] = None
 
 class ParsedJiraPayload(BaseModel):
-    who: ExtractionStatus
-    what: ExtractionStatus
-    why: ExtractionStatus
+    model_config = ConfigDict(extra='ignore') #
+    
+    what: WhatExtraction
+    why: WhyExtraction
+    who: WhoExtraction
     ac_defined: ACDefinedStatus
     grooming_questions: List[str] = Field(default_factory=list)
-    org_text: str
 
-# --- LLM Output Models ---
+# ==========================================
+# 2. LLM OUTPUT SCHEMAS (STATE MUTATION)
+# ==========================================
+
 class ValidationResult(BaseModel):
-    is_valid: bool = Field(description="True if the input is valid and clear.")
-    normalized_value: Optional[str] = Field(description="Cleaned, professional format.")
-
-class MissingTechnicalDetail(BaseModel):
-    has_missing_details: bool = Field(description="True if critical technical details are missing.")
-    questions: List[str] = Field(description="List of UP TO 4 critical questions. Empty if none.")
+    is_valid: bool = Field(description="True if the user's input is a valid and clear requirement.")
+    normalized_value: Optional[str] = Field(description="Cleaned, professional format of the input if valid. Null if invalid.")
+    rejection_reason: Optional[str] = Field(description="CRITICAL: If is_valid is false, provide a strict, 1-sentence reason why the input was rejected so the user can correct it.")
 
 class AcceptanceCriteria(BaseModel):
-    criteria: List[str] = Field(description="List of Agile Acceptance Criteria.")
+    criteria: List[str] = Field(description="List of finalized Agile Acceptance Criteria.")
 
 class FinalStory(BaseModel):
-    user_story: str = Field(description="Agile user story sentence.")
+    user_story: str = Field(description="Final Agile user story sentence (As a... I want to... So that...).")
     acceptance_criteria: List[str] = Field(description="Finalized list of acceptance criteria.")
