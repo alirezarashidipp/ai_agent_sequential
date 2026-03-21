@@ -22,7 +22,7 @@ class ACDefinedStatus(BaseModel):
     ac_evidence: Optional[str] = None
 
 class ParsedJiraPayload(BaseModel):
-    model_config = ConfigDict(extra='ignore') #
+    model_config = ConfigDict(extra='ignore') 
     
     what: WhatExtraction
     why: WhyExtraction
@@ -30,18 +30,38 @@ class ParsedJiraPayload(BaseModel):
     ac_defined: ACDefinedStatus
     grooming_questions: List[str] = Field(default_factory=list)
 
+
 # ==========================================
-# 2. LLM OUTPUT SCHEMAS (STATE MUTATION)
+# 2. SESSION STATE (STATELESS MEMORY)
+# ==========================================
+
+class SessionState(BaseModel):
+
+    what: Optional[str] = None
+    why: Optional[str] = None
+    who: Optional[str] = None
+    tech_notes: List[str] = Field(default_factory=list)
+    ac_list: List[str] = Field(default_factory=list)
+    final_story: Optional[str] = None
+
+
+# ==========================================
+# 3. LLM OUTPUT SCHEMAS (CONTRACTS)
 # ==========================================
 
 class ValidationResult(BaseModel):
     is_valid: bool = Field(description="True if the user's input is a valid and clear requirement.")
     normalized_value: Optional[str] = Field(description="Cleaned, professional format of the input if valid. Null if invalid.")
-    rejection_reason: Optional[str] = Field(description="CRITICAL: If is_valid is false, provide a strict, 1-sentence reason why the input was rejected so the user can correct it.")
+    rejection_reason: Optional[str] = Field(description="CRITICAL: If is_valid is false, provide a strict, 1-sentence reason why the input was rejected.")
+
+class MissingTechnicalDetail(BaseModel):
+
+    has_missing_details: bool = Field(description="True if the WHAT statement lacks critical technical details.")
+    questions: List[str] = Field(description="List of UP TO 4 critical technical questions. Empty if none are needed.")
 
 class AcceptanceCriteria(BaseModel):
-    criteria: List[str] = Field(description="List of finalized Agile Acceptance Criteria.")
+    criteria: List[str] = Field(description="List of finalized Agile Acceptance Criteria in plain English.")
 
 class FinalStory(BaseModel):
-    user_story: str = Field(description="Final Agile user story sentence (As a... I want to... So that...).")
-    acceptance_criteria: List[str] = Field(description="Finalized list of acceptance criteria.")
+    user_story: str = Field(description="Final Agile user story sentence (As a [WHO], I want to [WHAT], So that [WHY]).")
+    acceptance_criteria: List[str] = Field(description="Finalized list of acceptance criteria exactly as agreed upon.")
