@@ -1,5 +1,6 @@
 system_personas:
   validator: "You are a strict Agile requirement validator. Your job is to evaluate if a user's input for a specific Jira field is valid. If invalid, you MUST provide a precise, 1-sentence rejection reason."
+  tech_lead: "You are a Senior Technical Lead. Analyze feature requests to identify missing technical implementation details and formulate precise engineering questions."
   agile_coach: "You are an expert Agile coach. Generate or refine clear, testable, and implementation-independent Agile Acceptance Criteria."
   story_writer: "You are an Agile Product Owner. Synthesize context into a strict, well-formatted Agile Jira user story."
 
@@ -17,6 +18,14 @@ user_prompts:
     - If the input is valid based on the rules, set `is_valid` to true and format it in `normalized_value`.
     - If the input is invalid or vague, set `is_valid` to false, leave `normalized_value` null, and provide a strict 1-sentence `rejection_reason` explaining exactly why it failed so the user can fix it.
 
+  generate_dynamic_questions: |
+    Analyze the newly defined WHAT statement for missing technical implementation details.
+    Identify UP TO 4 of the most critical missing technical details (e.g., data types, edge cases, system integrations, error handling, performance constraints).
+    
+    CRITICAL INSTRUCTION: Do not generate trivial or business-level questions. If the statement is already technically complete and self-contained, return an empty list.
+    
+    WHAT statement: {what_statement}
+
   generate_ac: |
     Generate testable Agile Acceptance Criteria.
     
@@ -24,14 +33,14 @@ user_prompts:
     - WHO: {who}
     - WHAT: {what}
     - WHY: {why}
-    - Technical Grooming Notes: {tech_notes}
+    - Technical Grooming Notes (User Q&A): {tech_notes}
     
     INSTRUCTIONS BASED ON CURRENT STATE:
     - Has Existing ACs: {presence_ac}
     - Existing AC Evidence: {ac_evidence}
     
     IF 'Has Existing ACs' is True:
-    Rewrite and improve the 'Existing AC Evidence' by merging it with the 'Technical Grooming Notes' and core 'Feature Context'. Output a finalized list of clear criteria.
+    Rewrite and improve the 'Existing AC Evidence' by STRICTLY merging it with the 'Technical Grooming Notes' and core 'Feature Context'. Output a finalized list of clear, testable criteria.
     
     IF 'Has Existing ACs' is False:
     Generate up to 4 net-new, highly critical Acceptance Criteria based purely on the 'Feature Context' and 'Technical Grooming Notes'.
@@ -41,7 +50,7 @@ user_prompts:
     Original AC: {ac_json}
     User Feedback: "{feedback}"
     
-    Strictly apply the user's feedback to the Original AC and return the updated list.
+    Strictly apply the user's feedback to the Original AC and return the updated list. Do not drop existing criteria unless explicitly requested.
 
   generate_story: |
     Generate a final Agile Jira story.
@@ -53,9 +62,10 @@ user_prompts:
     
     Finalized Acceptance Criteria: {agreed_ac}
     
-    Output format MUST be:
+    Output format MUST be exactly:
     As a [WHO], I want to [WHAT], So that [WHY].
-    Then list the Acceptance Criteria exactly as provided.
+    
+    Then list the Acceptance Criteria exactly as provided, formatted cleanly.
 
   update_story: |
     Update the final Jira Story or its Acceptance Criteria based on the user's final review.
@@ -63,4 +73,4 @@ user_prompts:
     Original Story & AC: {story_json}
     User Feedback: "{feedback}"
     
-    Strictly apply the feedback and return the updated Story and AC list. Do not drop information unless explicitly asked.
+    Strictly apply the feedback and return the updated Story and AC list. Ensure the Agile format (As a... I want to...) is strictly maintained.
