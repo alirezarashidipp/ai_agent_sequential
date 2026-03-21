@@ -4,15 +4,13 @@ from llm_client import StructuredLLMClient
 from agent import JiraStatelessPipeline
 
 def get_mock_payload() -> ParsedJiraPayload:
-
-    
     mock_dict = {
         "who": {
             "identified": True, 
             "evidence": "Tfx team"
         },
         "what": {
-            "identified": False, # این مقدار False باعث تریگر شدن حلقه اعتبارسنجی ۳-تلاشه می‌شود
+            "identified": False,
             "intent_evidence": None
         },
         "why": {
@@ -23,27 +21,19 @@ def get_mock_payload() -> ParsedJiraPayload:
             "presence_ac": True,
             "ac_evidence": "Ensure the system stores the data accurately."
         },
-        "grooming_questions": [
-            "What is the exact name and data type of the new column?",
-            "Where in the Project class should the column be added?"
-        ]
+        "grooming_questions": []
     }
     return ParsedJiraPayload(**mock_dict)
 
 if __name__ == "__main__":
-    print("[SYSTEM BOOT] Initializing Stateless Jira Pipeline...")
+    print("[SYSTEM BOOT] Initializing Enterprise Stateless Jira Pipeline...")
     try:
-   
         payload = get_mock_payload()
-        
-
         client = StructuredLLMClient() 
         pipeline = JiraStatelessPipeline(client)
         
-     
         final_state = pipeline.run(payload)
         
- 
         print("\n" + "="*50)
         print("[SYSTEM TERMINATE] Pipeline Execution Completed Successfully.")
         print("Final Exportable Session State (JSON):")
@@ -51,4 +41,4 @@ if __name__ == "__main__":
         print("="*50)
         
     except Exception as e:
-        print(f"\n[FATAL ERROR] Execution halted abruptly due to unhandled exception: {e}")
+        print(f"\n[FATAL ERROR] Execution halted abruptly: {e}")
