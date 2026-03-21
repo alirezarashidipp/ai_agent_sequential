@@ -1,146 +1,185 @@
 import yaml
+from pydantic import BaseModel, Field
 from pathlib import Path
-from models import ParsedJiraPayload, ValidationResult, MissingTechnicalDetail, AcceptanceCriteria, FinalStory
+from typing import List, Optional
+from models import ParsedJiraPayload, ValidationResult, AcceptanceCriteria, FinalStory
 from llm_client import StructuredLLMClient
 
-class JiraGroomingAgent:
+# ==========================================
+# 1. SESSION STATE (The Independent Memory)
+# ==========================================
+class SessionState(BaseModel):
+
+    
+    what: Optional[str] = None
+    why: Optional[str] = None
+    who: Optional[str] = None
+    tech_notes: List[str] = Field(default_factory=list)
+    ac_list: List[str] = Field(default_factory=list)
+    final_story: Optional[str] = None
+
+
+# ==========================================
+# 2. STATELESS PIPELINE (Behavior Only)
+# ==========================================
+class JiraStatelessPipeline:
     def __init__(self, llm_client: StructuredLLMClient, prompt_file: str = "prompts.yaml"):
         self.llm = llm_client
         self.prompts = self._load_prompts(prompt_file)
-        # Internal State
-        self.context = {"who": None, "what": None, "why": None, "tech_notes": []}
-        self.ac = []
-        self.dynamic_what_flag = False
 
     def _load_prompts(self, filepath: str) -> dict:
         path = Path(filepath)
         with open(path, "r", encoding="utf-8") as file:
             return yaml.safe_load(file)
 
-    def run(self, payload: ParsedJiraPayload):
-        print("--- AI Jira Grooming Assistant ---")
-        
-        # 1. Initialize State
-        self.context['who'] = payload.who.evidence if payload.who.identified else None
-        self.context['what'] = payload.what.evidence if payload.what.identified else None
-        self.context['why'] = payload.why.evidence if payload.why.identified else None
-        
-        # Track if WHAT was initially missing to trigger dynamic grooming later
-        self.dynamic_what_flag = not payload.what.identified
+    # --- MAIN ORCHESTRATOR ---
+    def run(self, payload: ParsedJiraPayload) -> SessionState:
+        print("--- AI Jira Grooming Pipeline (Stateless) ---")
+        state = SessionState()
 
-        # 2. Sequential Core Resolution
-        self._resolve_core_triad()
-        
-        # 3. Gather Technical Context (Dynamic or Static Routing)
-        self._gather_technical_context(payload)
-        
-        # 4. AC Synthesis
-        self._generate_and_review_ac(payload)
-        
-        # 5. Final Artifact
-        self._generate_final_story()
+        # Phase 1: 3W Validation (Pass state in, get mutated state out)
+        state = self._resolve_core_triad(state, payload)
 
-    def _resolve_core_triad(self):
+        # Phase 2: Technical Grooming (Bypass if WHAT was missing in upstream)
+        if payload.what.identified and payload.grooming_questions:
+            state = self._gather_technical_context(state, payload)
+        else:
+            print("\n[SYSTEM] WHAT was missing upstream. Skipping static grooming questions.")
+
+        # Phase 3: AC Synthesis (With 3-try loop)
+        state = self._synthesize_ac(state, payload)
+
+        # Phase 4: Final Story (With 3-try loop)
+        state = self._generate_final_story(state)
+
+        return state
+
+    # --- PHASE 1: CORE TRIAD ---
+    def _resolve_core_triad(self, state: SessionState, payload: ParsedJiraPayload) -> SessionState:
         sys_prompt = self.prompts['system_personas']['validator']
         max_retries = 3
-        
-        # Order matters: Ensure WHAT is resolved before WHO and WHY
-        for field in ['what', 'who', 'why']:
+
+        # Mapping payload evidence to state
+        fields_map = {
+            'what': (payload.what.identified, payload.what.intent_evidence),
+            'why': (payload.why.identified, payload.why.value_evidence),
+            'who': (payload.who.identified, payload.who.evidence)
+        }
+
+        for field, (is_identified, evidence) in fields_map.items():
+            if is_identified and evidence:
+                setattr(state, field, evidence)
+                continue
+
+            # Field missing: Start 3-try validation loop
             retries = 0
-            last_ans = None
-            
-            while self.context[field] is None:
+            while getattr(state, field) is None:
                 if retries >= max_retries:
-                    print(f"\n[SYSTEM WARN] Max retries hit. Forcing raw input for {field.upper()}.")
-                    self.context[field] = last_ans or f"Unknown {field}"
+                    print(f"\n[SYSTEM WARN] Max retries hit. Aborting or forcing raw input for {field.upper()}.")
+                    setattr(state, field, f"Unknown {field}")
                     break
-                    
+
                 user_ans = input(f"\nMissing {field.upper()}. Please clarify:\n> ").strip()
                 if not user_ans:
                     continue
-                    
-                last_ans = user_ans
+
                 user_prompt = self.prompts['user_prompts']['validate_missing'].format(
                     field_name=field.upper(), user_ans=user_ans
                 )
-                
+
                 validation = self.llm.query(sys_prompt, user_prompt, ValidationResult)
+
                 if validation.is_valid:
-                    self.context[field] = validation.normalized_value
+                    setattr(state, field, validation.normalized_value)
                 else:
                     retries += 1
-                    print(f"The LLM rejected the input. (Attempt {retries}/{max_retries})")
+                    reason = validation.rejection_reason or "Invalid input."
+                    print(f"\n[REJECTED] {reason} (Attempt {retries}/{max_retries})")
 
-    def _gather_technical_context(self, payload: ParsedJiraPayload):
-        questions = []
-        
-        if not self.dynamic_what_flag and payload.grooming_questions:
-            print("\n[SYSTEM] Using pre-computed grooming questions.")
-            questions = payload.grooming_questions
-        else:
-            print("\n[SYSTEM] Generating dynamic grooming questions based on refined WHAT.")
-            sys_prompt = self.prompts['system_personas']['tech_lead']
-            user_prompt = self.prompts['user_prompts']['refine_tech'].format(
-                what_statement=self.context['what']
-            )
-            analysis = self.llm.query(sys_prompt, user_prompt, MissingTechnicalDetail)
-            if analysis.has_missing_details and analysis.questions:
-                questions = analysis.questions[:4] # Enforce absolute max of 4
+        return state
 
-        if questions:
-            for i, q in enumerate(questions, 1):
-                ans = input(f"\nQuestion {i}/{len(questions)}:\n{q}\n(Answer, or type 'skip'):\n> ").strip()
-                if ans.lower() not in ["skip", "no", "n/a", ""]:
-                    self.context['tech_notes'].append(ans)
+    # --- PHASE 2: GROOMING QUESTIONS ---
+    def _gather_technical_context(self, state: SessionState, payload: ParsedJiraPayload) -> SessionState:
+        print("\n[SYSTEM] Extracting technical details...")
+        for i, question in enumerate(payload.grooming_questions, 1):
+            ans = input(f"\nQuestion {i}/{len(payload.grooming_questions)}:\n{question}\n(Answer, or type 'skip'):\n> ").strip()
+            if ans.lower() not in ["skip", "no", "n/a", ""]:
+                state.tech_notes.append(f"Q: {question} | A: {ans}")
+        return state
 
-    def _generate_and_review_ac(self, payload: ParsedJiraPayload):
+    # --- PHASE 3: AC SYNTHESIS (3 Tries) ---
+    def _synthesize_ac(self, state: SessionState, payload: ParsedJiraPayload) -> SessionState:
         print("\n[SYSTEM] Synthesizing Acceptance Criteria...")
         sys_prompt = self.prompts['system_personas']['agile_coach']
         
-        state_dump = f"WHO: {self.context['who']} | WHAT: {self.context['what']} | WHY: {self.context['why']} | Tech Notes: {self.context['tech_notes']}"
-        
         user_prompt = self.prompts['user_prompts']['generate_ac'].format(
-            state_json=state_dump,
+            who=state.who, what=state.what, why=state.why, tech_notes=state.tech_notes,
             presence_ac=payload.ac_defined.presence_ac,
-            ac_evidence=payload.ac_defined.ac_evidence or "None",
-            english_feedback=payload.ac_defined.english_text_feedback or "None",
-            overall_feedback=payload.ac_defined.overal_feedback or "None"
+            ac_evidence=payload.ac_defined.ac_evidence or "None"
         )
         
         ac_draft = self.llm.query(sys_prompt, user_prompt, AcceptanceCriteria)
+        current_ac = ac_draft.criteria
         
-        print("\nProposed Acceptance Criteria:")
-        for idx, crit in enumerate(ac_draft.criteria, 1):
-            print(f"{idx}. {crit}")
+        # 3-Try Version Control Loop
+        max_edits = 3
+        for attempt in range(max_edits):
+            print("\nProposed Acceptance Criteria:")
+            for idx, crit in enumerate(current_ac, 1):
+                print(f"{idx}. {crit}")
+                
+            feedback = input(f"\nDo you confirm these AC? (Type 'confirm' or provide edits. Edits left: {max_edits - attempt}):\n> ").strip()
             
-        feedback = input("\nDo you confirm these AC, or would you like to add/modify? (Type 'confirm' or provide edits):\n> ").strip()
-        
-        if feedback.lower() != 'confirm':
+            if feedback.lower() == 'confirm':
+                break
+                
             update_prompt = self.prompts['user_prompts']['update_ac'].format(
-                ac_json={"criteria": ac_draft.criteria},
-                feedback=feedback
+                ac_json={"criteria": current_ac}, feedback=feedback
             )
-            final_ac = self.llm.query(sys_prompt, update_prompt, AcceptanceCriteria)
-            self.ac = final_ac.criteria
-        else:
-            self.ac = ac_draft.criteria
+            updated_ac_draft = self.llm.query(sys_prompt, update_prompt, AcceptanceCriteria)
+            current_ac = updated_ac_draft.criteria
+            
+            if attempt == max_edits - 1:
+                print("\n[SYSTEM] Max edits reached. Locking AC.")
 
-    def _generate_final_story(self):
+        state.ac_list = current_ac
+        return state
+
+    # --- PHASE 4: FINAL STORY (3 Tries) ---
+    def _generate_final_story(self, state: SessionState) -> SessionState:
         print("\n[SYSTEM] Generating final Jira artifact...")
         sys_prompt = self.prompts['system_personas']['story_writer']
         
-        state_dump = f"WHO: {self.context['who']} | WHAT: {self.context['what']} | WHY: {self.context['why']} | Tech Notes: {self.context['tech_notes']}"
         user_prompt = self.prompts['user_prompts']['generate_story'].format(
-            state_json=state_dump,
-            agreed_ac=self.ac
+            who=state.who, what=state.what, why=state.why, agreed_ac=state.ac_list
         )
         
-        final = self.llm.query(sys_prompt, user_prompt, FinalStory)
+        story_draft = self.llm.query(sys_prompt, user_prompt, FinalStory)
+        current_story = story_draft
         
-        print("\n" + "="*50)
-        print("FINAL AGILE JIRA STORY")
-        print("="*50)
-        print(final.user_story)
-        print("\nAcceptance Criteria:")
-        for idx, crit in enumerate(final.acceptance_criteria, 1):
-            print(f"{idx}. {crit}")
+        # 3-Try Version Control Loop
+        max_edits = 3
+        for attempt in range(max_edits):
+            print("\n" + "="*50 + "\nFINAL AGILE JIRA STORY\n" + "="*50)
+            print(current_story.user_story)
+            print("\nAcceptance Criteria:")
+            for idx, crit in enumerate(current_story.acceptance_criteria, 1):
+                print(f"{idx}. {crit}")
+                
+            feedback = input(f"\nDo you confirm this Story? (Type 'confirm' or provide edits. Edits left: {max_edits - attempt}):\n> ").strip()
+            
+            if feedback.lower() == 'confirm':
+                break
+                
+            update_prompt = self.prompts['user_prompts']['update_story'].format(
+                story_json=current_story.model_dump_json(), feedback=feedback
+            )
+            updated_story_draft = self.llm.query(sys_prompt, update_prompt, FinalStory)
+            current_story = updated_story_draft
+            
+            if attempt == max_edits - 1:
+                print("\n[SYSTEM] Max edits reached. Locking Story.")
+
+        state.final_story = current_story.user_story
+        state.ac_list = current_story.acceptance_criteria
+        return state
